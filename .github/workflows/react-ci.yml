@@ -37,6 +37,11 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Install jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
       - name: Docker login to private registry
         run: |
           echo "${{ secrets.DOCKER_REGISTRY_PASSWORD }}" | \
