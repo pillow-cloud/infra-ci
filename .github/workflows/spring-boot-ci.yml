@@ -1,29 +1,31 @@
-name: Spring Boot Shared CI/CD
+name: Spring Boot - Build & Deploy (Docker, On-Prem)
 
 on:
   workflow_call:
     inputs:
       service_name:
-        description: "Docker image name suffix (e.g. u-hyu-be)"
+        description: "이미지 이름 및 compose 프로젝트 이름에 쓸 서비스 이름 (예: u-hyu-be)"
         required: true
-        type: string
-      compose_dir:
-        description: "Server directory where docker-compose.yml lives"
-        required: true
-        type: string
-      java_version:
-        required: false
-        default: "17"
         type: string
       registry_url:
-        required: false
-        default: "registry.pillow12360.world"
+        description: "Docker Registry 주소 (예: registry.pillow12360.world)"
+        required: true
         type: string
-      dockerfile_path:
+      dockerfile:
+        description: "사용할 Dockerfile 경로 (루트 기준)"
         required: false
-        default: "."
+        default: "./Dockerfile"
         type: string
-
+      image_tag:
+        description: "이미지 태그 (기본은 latest)"
+        required: false
+        default: "latest"
+        type: string
+      compose_file:
+        description: "배포에 사용할 docker-compose 파일 경로"
+        required: false
+        default: "./docker-compose.yml"
+        type: string
     secrets:
       DOCKER_REGISTRY_USERNAME:
         required: true
@@ -31,45 +33,71 @@ on:
         required: true
 
 jobs:
-  build-and-deploy:
+  build-and-push:
     runs-on: self-hosted
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Set up JDK
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ inputs.java_version }}
           distribution: temurin
+          java-version: "17"
 
-      - name: Cache Maven repository
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository
-          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+      - name: Grant execute permission for gradlew (옵션: Gradle 프로젝트일 때)
+        if: hashFiles('gradlew') != ''
+        run: chmod +x ./gradlew
 
-      - name: Run tests
-        run: ./mvnw test
+      - name: Build Spring Boot jar (Gradle 기준)
+        if: hashFiles('build.gradle*') != ''
+        run: ./gradlew clean bootJar
 
-      - name: Build application
-        run: ./mvnw package -DskipTests
+      # Maven 쓰면 위 Step 대신 이런 Step으로 교체하면 됨
+      # - name: Build Spring Boot jar (Maven 기준)
+      #   if: hashFiles('pom.xml') != ''
+      #   run: mvn -B clean package -DskipTests
 
-      - name: Login to private registry
+      - name: Docker login to private registry
         run: |
           echo "${{ secrets.DOCKER_REGISTRY_PASSWORD }}" | \
           docker login ${{ inputs.registry_url }} \
-          -u "${{ secrets.DOCKER_REGISTRY_USERNAME }}" --password-stdin
+            -u "${{ secrets.DOCKER_REGISTRY_USERNAME }}" --password-stdin
 
-      - name: Build and push image
+      - name: Build Docker image
+        env:
+          IMAGE: ${{ inputs.registry_url }}/${{ inputs.service_name }}:${{ inputs.image_tag }}
         run: |
-          IMAGE=${{ inputs.registry_url }}/${{ inputs.service_name }}:latest
-          docker build -t $IMAGE ${{ inputs.dockerfile_path }}
-          docker push $IMAGE
+          echo "Building image: $IMAGE"
+          docker build -t "$IMAGE" -f "${{ inputs.dockerfile }}" .
 
-      - name: Deploy using docker compose
-        working-directory: ${{ inputs.compose_dir }}
+      - name: Push Docker image
+        env:
+          IMAGE: ${{ inputs.registry_url }}/${{ inputs.service_name }}:${{ inputs.image_tag }}
         run: |
-          docker compose pull
-          docker compose up -d
+          echo "Pushing image: $IMAGE"
+          docker push "$IMAGE"
+
+  deploy:
+    runs-on: self-hosted
+    needs: build-and-push
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Docker login to private registry (for safety)
+        run: |
+          echo "${{ secrets.DOCKER_REGISTRY_PASSWORD }}" | \
+          docker login ${{ inputs.registry_url }} \
+            -u "${{ secrets.DOCKER_REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Docker Compose pull & up
+        env:
+          IMAGE: ${{ inputs.registry_url }}/${{ inputs.service_name }}:${{ inputs.image_tag }}
+        run: |
+          echo "Using image: $IMAGE"
+          echo "Compose file: ${{ inputs.compose_file }}"
+          docker compose -f "${{ inputs.compose_file }}" pull
+          docker compose -f "${{ inputs.compose_file }}" up -d
