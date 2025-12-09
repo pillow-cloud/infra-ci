@@ -1,0 +1,75 @@
+name: Spring Boot Shared CI/CD
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "Docker image name suffix (e.g. u-hyu-be)"
+        required: true
+        type: string
+      compose_dir:
+        description: "Server directory where docker-compose.yml lives"
+        required: true
+        type: string
+      java_version:
+        required: false
+        default: "17"
+        type: string
+      registry_url:
+        required: false
+        default: "registry.pillow12360.world"
+        type: string
+      dockerfile_path:
+        required: false
+        default: "."
+        type: string
+
+    secrets:
+      DOCKER_REGISTRY_USERNAME:
+        required: true
+      DOCKER_REGISTRY_PASSWORD:
+        required: true
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java_version }}
+          distribution: temurin
+
+      - name: Cache Maven repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+
+      - name: Run tests
+        run: ./mvnw test
+
+      - name: Build application
+        run: ./mvnw package -DskipTests
+
+      - name: Login to private registry
+        run: |
+          echo "${{ secrets.DOCKER_REGISTRY_PASSWORD }}" | \
+          docker login ${{ inputs.registry_url }} \
+          -u "${{ secrets.DOCKER_REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Build and push image
+        run: |
+          IMAGE=${{ inputs.registry_url }}/${{ inputs.service_name }}:latest
+          docker build -t $IMAGE ${{ inputs.dockerfile_path }}
+          docker push $IMAGE
+
+      - name: Deploy using docker compose
+        working-directory: ${{ inputs.compose_dir }}
+        run: |
+          docker compose pull
+          docker compose up -d
