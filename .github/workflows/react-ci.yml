@@ -1,0 +1,100 @@
+name: Reusable React Docker CI
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        required: true
+        type: string
+      registry_url:
+        required: true
+        type: string
+      dockerfile:
+        required: true
+        type: string
+      image_tag:
+        required: false
+        type: string
+        default: "latest"
+      compose_file:
+        required: true
+        type: string
+      build_args:
+        required: false
+        type: object   # Vite 환경변수 등 빌드 타임 인자용
+        default: {}
+    secrets:
+      DOCKER_REGISTRY_USERNAME:
+        required: true
+      DOCKER_REGISTRY_PASSWORD:
+        required: true
+
+jobs:
+  build-and-push:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Docker login to private registry
+        run: |
+          echo "${{ secrets.DOCKER_REGISTRY_PASSWORD }}" | \
+          docker login ${{ inputs.registry_url }} \
+            -u "${{ secrets.DOCKER_REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Prepare build args
+        id: buildargs
+        run: |
+          echo "Parsing build args..."
+          json='${{ toJson(inputs.build_args) }}'
+          # build_args가 비어있으면 빈 문자열 리턴
+          if [ "$json" = "{}" ] || [ -z "$json" ]; then
+            echo "No build args provided."
+            echo "args=" >> $GITHUB_OUTPUT
+          else
+            args=$(echo "$json" | jq -r 'to_entries | map("--build-arg \(.key)=\(.value|tostring)") | join(" ")')
+            echo "Build args: $args"
+            echo "args=$args" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker image
+        env:
+          IMAGE: ${{ inputs.registry_url }}/${{ inputs.service_name }}:${{ inputs.image_tag }}
+          BUILD_ARGS: ${{ steps.buildargs.outputs.args }}
+        run: |
+          echo "Building image: $IMAGE"
+          docker build $BUILD_ARGS -t "$IMAGE" -f "${{ inputs.dockerfile }}" .
+
+      - name: Push Docker image
+        env:
+          IMAGE: ${{ inputs.registry_url }}/${{ inputs.service_name }}:${{ inputs.image_tag }}
+        run: |
+          echo "Pushing image: $IMAGE"
+          docker push "$IMAGE"
+
+  deploy:
+    runs-on: self-hosted
+    needs: build-and-push
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Docker login to private registry
+        run: |
+          echo "${{ secrets.DOCKER_REGISTRY_PASSWORD }}" | \
+          docker login ${{ inputs.registry_url }} \
+            -u "${{ secrets.DOCKER_REGISTRY_USERNAME }}" --password-stdin
+
+      - name: Docker Compose pull & up
+        env:
+          IMAGE: ${{ inputs.registry_url }}/${{ inputs.service_name }}:${{ inputs.image_tag }}
+        run: |
+          echo "Using image: $IMAGE"
+          echo "Compose file: ${{ inputs.compose_file }}"
+          docker compose -f "${{ inputs.compose_file }}" pull
+          docker compose -f "${{ inputs.compose_file }}" up -d
+
+      - name: Cleanup old images
+        run: docker image prune -f
