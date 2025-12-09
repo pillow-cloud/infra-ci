@@ -21,8 +21,8 @@ on:
         type: string
       build_args:
         required: false
-        type: object   # Vite 환경변수 등 빌드 타임 인자용
-        default: {}
+        type: string
+        default: "{}"
     secrets:
       DOCKER_REGISTRY_USERNAME:
         required: true
@@ -47,8 +47,8 @@ jobs:
         id: buildargs
         run: |
           echo "Parsing build args..."
-          json='${{ toJson(inputs.build_args) }}'
-          # build_args가 비어있으면 빈 문자열 리턴
+          json='${{ inputs.build_args }}'
+
           if [ "$json" = "{}" ] || [ -z "$json" ]; then
             echo "No build args provided."
             echo "args=" >> $GITHUB_OUTPUT
